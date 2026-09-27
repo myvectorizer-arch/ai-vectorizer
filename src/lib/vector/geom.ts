@@ -279,7 +279,20 @@ function generateBezier(pts: Pt[], u: number[], t1: Pt, t2: Pt): Cubic {
   let alphaR = det === 0 ? 0 : det1 / det;
   const segLen = dist(p0, p3);
   const eps = 1e-6 * segLen;
-  if (!isFinite(alphaL) || !isFinite(alphaR) || alphaL < eps || alphaR < eps) {
+  // A near-singular least-squares system (nearly straight/duplicate points) can
+  // produce a huge-but-finite alpha instead of Infinity/NaN, which the old check
+  // didn't catch — the resulting control point lands far outside the shape and
+  // renders as a thin stray spike/line. Cap alpha at a generous multiple of the
+  // chord length; anything beyond that is numerically unstable, not a real fit.
+  const maxAlpha = Math.max(segLen * 6, 24);
+  if (
+    !isFinite(alphaL) ||
+    !isFinite(alphaR) ||
+    alphaL < eps ||
+    alphaR < eps ||
+    alphaL > maxAlpha ||
+    alphaR > maxAlpha
+  ) {
     const d = segLen / 3 || 0.1;
     alphaL = d;
     alphaR = d;
