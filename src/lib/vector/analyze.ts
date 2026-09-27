@@ -1106,6 +1106,50 @@ export function analyzeImage(
       if (solid && thickness >= 3.5) keepColours.push(c);
       else blends.push(c);
     }
+    // A stroke that is itself only ~1-2px wide (common in flat line-art icons) can
+    // fail the thickness test above even though it is the *only* ink colour in the
+    // image – every "surviving" colour would then just be shades of the paper, and
+    // the whole drawing would vanish. Never let this cleanup step erase every real
+    // colour: if nothing but paper-ish tones would remain, keep the strongest ink
+    // candidate(s) instead of discarding them as fringe.
+    const hasInk = keepColours.some((c) => {
+      const dist = Math.hypot(
+        palette[c][0] - palette[0][0],
+        palette[c][1] - palette[0][1],
+        palette[c][2] - palette[0][2],
+      );
+      return dist >= 40;
+    });
+    if (!hasInk && blends.length) {
+      blends.sort((x, y) => (paletteSizes[y] ?? 0) - (paletteSizes[x] ?? 0));
+      // Merge the rescued candidates into a single ink colour (size-weighted
+      // average) instead of keeping them as separate palette entries – two
+      // near-identical near-black shades drawn as two overlapping shapes look
+      // like a dashed/doubled outline instead of one solid line.
+      const rescued = blends.splice(0, Math.min(3, blends.length));
+      let sr = 0;
+      let sg = 0;
+      let sb = 0;
+      let stotal = 0;
+      for (const c of rescued) {
+        const wgt = paletteSizes[c] ?? 1;
+        sr += palette[c][0] * wgt;
+        sg += palette[c][1] * wgt;
+        sb += palette[c][2] * wgt;
+        stotal += wgt;
+      }
+      const mergedIdx = rescued[0];
+      palette[mergedIdx] = [sr / stotal, sg / stotal, sb / stotal];
+      paletteSizes[mergedIdx] = stotal;
+      keepColours.push(mergedIdx);
+      pipeline.push({
+        step: "Ink Rescue",
+        ms: 0,
+        note: `thin-stroke colour(s) merged and kept despite failing the fringe-thickness test (would have left no ink): ${rescued
+          .map((c) => hexOf(palette[c]))
+          .join(", ")}`,
+      });
+    }
     if (blends.length && keepColours.length >= 2) {
       const removed = blends.map((c) => palette[c]);
       palette = keepColours.map((c) => palette[c]);
@@ -1118,6 +1162,7 @@ export function analyzeImage(
           .join(", ")}`,
       });
       // re-label against the reduced palette
+
       labels = time("Re-classify", () => {
         const out = new Int16Array(ch.n).fill(-1);
         for (let i = 0; i < ch.n; i++) {
