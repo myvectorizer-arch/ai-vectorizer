@@ -648,6 +648,18 @@ export function fitArc(pts: Pt[], tol: number): ArcFit | null {
   for (const p of pts2) sum += (Math.hypot(p.x - cx, p.y - cy) - r) ** 2;
   const rms = Math.sqrt(sum / n);
   if (!isFinite(rms) || rms > tol) return null;
+  // A near-straight run of points can still satisfy the rms tolerance above with
+  // a huge fitted radius (the Kasa fit is ill-conditioned near-collinear points
+  // and can "explain" a small local wiggle with a circle whose centre is far
+  // away). That huge-radius arc still passes through the real start/end points,
+  // but bulges way outside the shape when rendered – exactly the stray
+  // crescent/bulge seen on nearly-straight edges. A genuine round feature has a
+  // radius comparable to its own span, so reject anything wildly larger than the
+  // point spread and let it fall back to a straight/Bezier fit instead.
+  const [bx0, by0, bx1, by1] = bboxOf(pts2);
+  const spread = Math.max(bx1 - bx0, by1 - by0, dist(pts2[0], pts2[pts2.length - 1]));
+  if (r > Math.max(spread * 8, 40)) return null;
+  if (!isFinite(cx) || !isFinite(cy)) return null;
 
   // unwrap sweep angle
   let prev = Math.atan2(pts2[0].y - cy, pts2[0].x - cx);
@@ -709,6 +721,12 @@ export function fitEllipse(pts: Pt[], tol: number): ArcFit | null {
   if (!isFinite(rx) || !isFinite(ry) || rx < 2 || ry < 2) return null;
   const ratio = rx / ry;
   if (ratio < 0.25 || ratio > 4) return null;
+  // Same ill-conditioned-fit guard as fitArc: reject an ellipse whose axes are
+  // wildly larger than the point set it was fit from (a near-degenerate normal
+  // system can still satisfy the error tolerance below with a huge ellipse).
+  const [ebx0, eby0, ebx1, eby1] = bboxOf(pts2);
+  const espread = Math.max(ebx1 - ebx0, eby1 - eby0, 20);
+  if (rx > espread * 8 || ry > espread * 8) return null;
   const value = (p: Pt) => a * p.x * p.x + c * p.y * p.y + d * p.x + e * p.y + f;
   let worst = 0;
   for (const p of pts2) worst = Math.max(worst, Math.abs(value(p)));
