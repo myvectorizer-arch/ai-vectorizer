@@ -564,7 +564,12 @@ export function fitClosedCircle(
   const cx = -D / 2;
   const cy = -E / 2;
   const r2 = cx * cx + cy * cy - F;
-  if (!(r2 > 16)) return null;
+  // Small icons packed into a sprite sheet/grid (common for stock-icon exports)
+  // can have genuinely round decorative circles only 5-8px in radius once
+  // rasterized. The old floor of r>4px rejected these as "too small to be a
+  // real circle" and they fell back to a faceted polygon (a hexagon/octagon).
+  // 2.5px is still well above pixel-quantization noise.
+  if (!(r2 > 6.25)) return null;
   const r = Math.sqrt(r2);
   let sum = 0;
   let maxErr = 0;
@@ -583,8 +588,11 @@ export function fitClosedCircle(
   // Deviation budget by shape: hexagon 0.13R, octagon 0.08R, square 0.29R,
   // triangle 0.5R. So 0.20R for small contours accepts hexagons and finer round
   // polygons while still rejecting squares and triangles.
-  const maxTolerance = r < 30 ? Math.max(1.4, r * 0.2) : Math.max(1.1, r * 0.01);
-  const rmsTolerance = r < 30 ? Math.max(0.7, r * 0.12) : Math.max(0.5, r * 0.006);
+  // Very small circles (r below ~8px) carry proportionally more pixel-quantization
+  // wobble than the r<30 band already accounts for, so give them their own,
+  // slightly more generous allowance instead of a single breakpoint at 30px.
+  const maxTolerance = r < 8 ? Math.max(1.6, r * 0.32) : r < 30 ? Math.max(1.4, r * 0.2) : Math.max(1.1, r * 0.01);
+  const rmsTolerance = r < 8 ? Math.max(0.8, r * 0.18) : r < 30 ? Math.max(0.7, r * 0.12) : Math.max(0.5, r * 0.006);
   if (rms > rmsTolerance || maxErr > maxTolerance) return null;
   // does the contour actually cover the whole circle (not just an arc)?
   const angles = pts2.map((p) => Math.atan2(p.y - cy, p.x - cx)).sort((a, b) => a - b);
