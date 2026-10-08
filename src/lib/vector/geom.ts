@@ -109,28 +109,24 @@ export function simplify(points: Pt[], tol: number): Pt[] {
 export function simplifyClosed(points: Pt[], tol: number): Pt[] {
   const pts = dedupe(points);
   const n = pts.length;
-  if (n < 4 || tol <= 0) return pts;
-
-  // Choose a globally farthest pair instead of always anchoring the split to
-  // pts[0]. This makes closed-contour RDP much less sensitive to start index.
-  let ia = 0, ib = 1, bestD2 = -1;
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const dx = pts[i].x - pts[j].x;
-      const dy = pts[i].y - pts[j].y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > bestD2) { bestD2 = d2; ia = i; ib = j; }
+  if (n < 4) return pts;
+  if (tol <= 0) return pts;
+  let best = 0;
+  let bestD = -1;
+  const c = pts[0];
+  for (let i = 1; i < n; i++) {
+    const d = (pts[i].x - c.x) ** 2 + (pts[i].y - c.y) ** 2;
+    if (d > bestD) {
+      bestD = d;
+      best = i;
     }
   }
-
-  const rotate = (from: number) => pts.slice(from).concat(pts.slice(0, from));
-  const ordered = rotate(ia);
-  const split = (ib - ia + n) % n;
-  const head = ordered.slice(0, split + 1);
-  const tail = ordered.slice(split).concat([ordered[0]]);
+  const head = pts.slice(0, best + 1);
+  const tail = pts.slice(best);
   const sHead = simplify(head, tol);
   const sTail = simplify(tail, tol);
-  return dedupe(sHead.slice(0, -1).concat(sTail.slice(0, -1)));
+  const out = sHead.slice(0, -1).concat(sTail);
+  return dedupe(out);
 }
 
 /** Weighted moving-average easing – turns pixel staircases into flowing edges. */
@@ -343,7 +339,6 @@ const norm = (dx: number, dy: number): Pt => {
 /** Fit a polyline with cubic Beziers within `tol` px. */
 export function fitCubics(pts: Pt[], tol: number): Cubic[] {
   const out: Cubic[] = [];
-  if (pts.length < 2) return [];
   const done: Cubic[][] = [];
   const tHat1 = norm(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
   const last = pts[pts.length - 1];
@@ -596,14 +591,8 @@ export function fitClosedCircle(
   // Very small circles (r below ~8px) carry proportionally more pixel-quantization
   // wobble than the r<30 band already accounts for, so give them their own,
   // slightly more generous allowance instead of a single breakpoint at 30px.
-  // Respect the caller tolerance while keeping a small quantization floor.
-  const userTol = Math.max(0, tol);
-  const maxTolerance = r < 8 ? Math.min(Math.max(0.75, r * 0.32), Math.max(0.75, userTol * 1.5))
-    : r < 30 ? Math.min(Math.max(0.75, r * 0.2), Math.max(0.75, userTol * 1.5))
-    : Math.min(Math.max(0.75, r * 0.01), Math.max(0.75, userTol * 1.5));
-  const rmsTolerance = r < 8 ? Math.min(Math.max(0.5, r * 0.18), Math.max(0.5, userTol))
-    : r < 30 ? Math.min(Math.max(0.5, r * 0.12), Math.max(0.5, userTol))
-    : Math.min(Math.max(0.35, r * 0.006), Math.max(0.35, userTol));
+  const maxTolerance = r < 8 ? Math.max(1.6, r * 0.32) : r < 30 ? Math.max(1.4, r * 0.2) : Math.max(1.1, r * 0.01);
+  const rmsTolerance = r < 8 ? Math.max(0.8, r * 0.18) : r < 30 ? Math.max(0.7, r * 0.12) : Math.max(0.5, r * 0.006);
   if (rms > rmsTolerance || maxErr > maxTolerance) return null;
   // does the contour actually cover the whole circle (not just an arc)?
   const angles = pts2.map((p) => Math.atan2(p.y - cy, p.x - cx)).sort((a, b) => a - b);
@@ -728,15 +717,13 @@ export function fitEllipse(pts: Pt[], tol: number): ArcFit | null {
     }
   }
   const sol = solveLinear(A, b);
-  if (!sol || sol.some((v) => !Number.isFinite(v))) return null;
+  if (!sol) return null;
   const [a, c, d, e, f] = sol;
-  if (a === 0 || c === 0 || a * c <= 0) return null;
+  if (a === 0 || c === 0) return null;
   const cx = -d / (2 * a);
   const cy = -e / (2 * c);
-  // The fitted equation is a*x² + c*y² + d*x + e*y + f = -1.
-  // Keep the constant -1 when completing the square.
-  const k = f + 1 - a * cx * cx - c * cy * cy;
-  if (k === 0 || a * c <= 0 || !Number.isFinite(k)) return null;
+  const k = f - a * cx * cx - c * cy * cy;
+  if (k === 0 || a * c <= 0) return null;
   const rx = Math.sqrt(-k / a);
   const ry = Math.sqrt(-k / c);
   if (!isFinite(rx) || !isFinite(ry) || rx < 2 || ry < 2) return null;
@@ -890,9 +877,6 @@ export function arcToCubics(
   const sign = arc.large === arc.sweep ? -1 : 1;
   const num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
   const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
-  if (!(den > 1e-15) || !Number.isFinite(den)) {
-    return [{ c1: { x: x1, y: y1 }, c2: { x: x2, y: y2 }, end: { x: x2, y: y2 } }];
-  }
   const co = sign * Math.sqrt(Math.max(0, num / den));
   const cxp = (co * rx * y1p) / ry;
   const cyp = (-co * ry * x1p) / rx;
@@ -974,9 +958,7 @@ export function fitPolyline(
   // (rectangle, triangle, arrow…). Feeding that into the Bezier fitter made the
   // tangents overshoot and inflated the shape badly (measured: a 200x140 rect
   // rendered as 222x192, shifted 22 px). Straight segments are exact.
-  // Do not turn every small smooth contour into a polygon. A circle can
-  // legitimately simplify to 6-8 points; let the curve/arc fitters handle it.
-  if (pts.length < 3) return lineSegs(pts, opts.closed);
+  if (pts.length <= 8) return lineSegs(pts, opts.closed);
   const flags = detectCorners(pts, opts.cornerThreshold, opts.cornerWindow, opts.closed);
   const runs = splitAtCorners(pts, flags);
   const segs: Seg[] = [];
@@ -1014,23 +996,54 @@ export function fitPolyline(
   return segs;
 }
 
-function appendRun(
-  segs: Seg[],
-  runRaw: Pt[],
-  opts: {
-    tol: number;
-    curveTypes: {
-      lines: boolean;
-      quadratic: boolean;
-      cubic: boolean;
-      circularArcs: boolean;
-      ellipticalArcs: boolean;
-    };
-  },
-): void {
+/** An edge between two simplified vertices longer than this is emitted as an exact
+ *  straight line. The simplifier guarantees every edge stays within a fraction of
+ *  a pixel of the real contour, so a long edge IS a straight stretch of the shape.
+ *  Handing it to the arc / Bezier fitters together with only a few neighbouring
+ *  vertices is what produced wavy vent lines and huge bulging arcs: with 3-6
+ *  points, any circle or curve "fits" with zero error. */
+const LONG_EDGE_PX = 30;
+
+type FitOpts = {
+  tol: number;
+  curveTypes: {
+    lines: boolean;
+    quadratic: boolean;
+    cubic: boolean;
+    circularArcs: boolean;
+    ellipticalArcs: boolean;
+  };
+};
+
+function appendRun(segs: Seg[], runRaw: Pt[], opts: FitOpts): void {
   const run = dedupe(runRaw);
   if (run.length < 2) return;
   if (segs.length === 0) segs.push({ t: "M", x: run[0].x, y: run[0].y });
+
+  let hasLong = false;
+  for (let i = 1; i < run.length; i++) {
+    if (dist(run[i - 1], run[i]) > LONG_EDGE_PX) {
+      hasLong = true;
+      break;
+    }
+  }
+  if (!hasLong) {
+    appendFittedRun(segs, run, opts);
+    return;
+  }
+  let start = 0;
+  for (let i = 1; i < run.length; i++) {
+    if (dist(run[i - 1], run[i]) > LONG_EDGE_PX) {
+      if (i - 1 > start) appendFittedRun(segs, run.slice(start, i), opts);
+      segs.push({ t: "L", x: run[i].x, y: run[i].y });
+      start = i;
+    }
+  }
+  if (run.length - 1 > start) appendFittedRun(segs, run.slice(start), opts);
+}
+
+function appendFittedRun(segs: Seg[], run: Pt[], opts: FitOpts): void {
+  if (run.length < 2) return;
   const tol = opts.tol;
   if (run.length === 2) {
     segs.push({ t: "L", x: run[1].x, y: run[1].y });
@@ -1058,7 +1071,7 @@ function appendRun(
       segs.push({ t: "L", x: last.x, y: last.y });
       return;
     }
-    if (opts.curveTypes.circularArcs) {
+    if (opts.curveTypes.circularArcs && run.length >= 6) {
       const arc = fitArc(run, Math.max(tol, 0.35));
       if (arc && dist(arc.start, arc.end) > 0.05) {
         segs.push({
@@ -1074,7 +1087,7 @@ function appendRun(
         return;
       }
     }
-    if (opts.curveTypes.ellipticalArcs) {
+    if (opts.curveTypes.ellipticalArcs && run.length >= 6) {
       const ell = fitEllipse(run, Math.max(tol, 0.5));
       if (ell && dist(ell.start, ell.end) > 0.05) {
         segs.push({
