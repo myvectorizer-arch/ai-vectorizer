@@ -1256,7 +1256,7 @@ export function analyzeImage(
     const holes: { loop: TraceLoop; area: number; bbox: [number, number, number, number] }[] = [];
     for (const rawPts of rawLoops) {
       const refined = refineSubpixel(rawPts, field, w, h);
-      const simplified = simplifyClosed(refined, 0.5);
+      const simplified = simplifyClosed(refined, 0.12);
       if (simplified.length < 3) continue;
       const signed = shoelace(simplified);
       const area = Math.abs(signed);
