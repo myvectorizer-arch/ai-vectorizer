@@ -413,7 +413,11 @@ export function renderDoc(trace: TraceResult, render: RenderSettings): RenderedD
       }
 
       const eased = raw.length >= 16 ? guardSmoothing(raw, passes + 1) : raw;
-      const simplified = simplifyClosed(eased, Math.max(0.3, tol * 0.55));
+      // Keep the contour dense (0.12 px): the curve fitter must see the real shape of
+      // the edge. Simplifying to 0.3-0.5 px first left only a few vertices per curve, and
+      // every later stage (lines / arcs / Beziers) then fitted those few points instead
+      // of the artwork, which showed up as faceted, polygon-like edges.
+      const simplified = simplifyClosed(eased, 0.12);
       if (simplified.length < 3) return [];
       const whole = fitPolyline(simplified, {
         closed: true,
