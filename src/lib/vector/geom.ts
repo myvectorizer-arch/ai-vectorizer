@@ -362,20 +362,20 @@ function fitCubicRec(
     return;
   }
   if (pts.length === 2) {
-    out.push([lineAsCubic(pts)]);
+    out.push([tangentCubic(pts, tHat1, tHat2)]);
     return;
   }
   const clean = dedupe(pts);
   if (clean.length < 2) return;
   if (clean.length === 2) {
-    out.push([lineAsCubic(clean)]);
+    out.push([tangentCubic(clean, tHat1, tHat2)]);
     return;
   }
   let u = chordLengthParameterize(clean);
   let bez = generateBezier(clean, u, tHat1, tHat2);
   let { maxD, split } = maxErrorPoint(clean, bez, u);
 
-  if (maxD < error) {
+  if (maxD < error && (clean.length < 5 || curveHugsPoints(clean, bez, Math.sqrt(error) * 1.5))) {
     out.push([bez]);
     return;
   }
@@ -384,7 +384,7 @@ function fitCubicRec(
   let bestBez = bez;
   let bestU = u;
   let bestSplit = split;
-  for (let i = 0; i < 4 && bestD >= error; i++) {
+    for (let i = 0; i < 4 && (bestD >= error || !curveHugsPoints(clean, bestBez, Math.sqrt(error) * 1.5)); i++) {
     u = reparameterize(clean, u, bez);
     bez = generateBezier(clean, u, tHat1, tHat2);
     const r = maxErrorPoint(clean, bez, u);
@@ -395,17 +395,37 @@ function fitCubicRec(
       bestSplit = r.split;
     }
   }
-  if (bestD < error) {
+  if (bestD < error && (clean.length < 5 || curveHugsPoints(clean, bestBez, Math.sqrt(error) * 1.5))) {
     out.push([bestBez]);
     return;
   }
+  // Never accept a fit that is out of tolerance just because the worst point sits at an
+  // end of the piece (the tangent-constrained curve then overshoots by several px).
+  // Cut the piece in the middle instead and fit each half.
   if (bestSplit <= 0 || bestSplit >= clean.length - 1) {
-    out.push([bestBez]);
-    return;
+    if (clean.length < 5) {
+      out.push([bestBez]);
+      return;
+    }
+    bestSplit = Math.floor(clean.length / 2);
+  }
+  // Split tangent from a wider neighbourhood: a +-1 point tangent on a dense, slightly
+  // noisy contour points in a random direction, and that is a visible kink at the join.
+  let span = 1;
+  {
+    // ~3 px of arc length each side: long enough to ignore pixel noise, short enough
+    // to follow real curvature
+    let acc = 0;
+    const maxSpan = Math.min(bestSplit, clean.length - 1 - bestSplit, 6);
+    while (span < maxSpan) {
+      acc += dist(clean[bestSplit - span], clean[bestSplit - span + 1]);
+      if (acc >= 3) break;
+      span++;
+    }
   }
   const center = norm(
-    clean[bestSplit - 1].x - clean[bestSplit + 1].x,
-    clean[bestSplit - 1].y - clean[bestSplit + 1].y,
+    clean[bestSplit - span].x - clean[bestSplit + span].x,
+    clean[bestSplit - span].y - clean[bestSplit + span].y,
   );
   void bestU;
   const left: Cubic[][] = [];
@@ -420,6 +440,53 @@ function fitCubicRec(
     depth + 1,
   );
   out.push(...left, ...right);
+}
+
+/** Two points joined with the incoming/outgoing tangents so the join stays smooth. Only
+ *  used when the tangents roughly agree with the chord; otherwise it is a plain line. */
+function tangentCubic(pts: Pt[], t1: Pt, t2: Pt): Cubic {
+  const p0 = pts[0];
+  const p3 = pts[pts.length - 1];
+  const chord = dist(p0, p3);
+  const c = norm(p3.x - p0.x, p3.y - p0.y);
+  const ok1 = t1.x * c.x + t1.y * c.y > 0.5;
+  const ok2 = -(t2.x * c.x + t2.y * c.y) > 0.5;
+  if (!ok1 || !ok2) return lineAsCubic(pts);
+  const d = chord / 3;
+  return {
+    p0,
+    c1: { x: p0.x + t1.x * d, y: p0.y + t1.y * d },
+    c2: { x: p3.x + t2.x * d, y: p3.y + t2.y * d },
+    p3,
+  };
+}
+
+/** True geometric check of a fitted cubic: the curve itself (sampled between the data
+ *  points too) must stay near the traced polyline. Parameter-based errors can look fine
+ *  while the curve overshoots between samples. */
+function curveHugsPoints(pts: Pt[], b: Cubic, limit: number): boolean {
+  const steps = Math.max(8, Math.min(40, pts.length * 2));
+  const lim2 = limit * limit;
+  for (let k = 1; k < steps; k++) {
+    const q = bezierPoint(b, k / steps);
+    let best = Infinity;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const c = pts[i];
+      const dx = c.x - a.x;
+      const dy = c.y - a.y;
+      const l2 = dx * dx + dy * dy;
+      let t = l2 === 0 ? 0 : ((q.x - a.x) * dx + (q.y - a.y) * dy) / l2;
+      t = Math.max(0, Math.min(1, t));
+      const ex = q.x - (a.x + t * dx);
+      const ey = q.y - (a.y + t * dy);
+      const d2 = ex * ex + ey * ey;
+      if (d2 < best) best = d2;
+      if (best <= lim2) break;
+    }
+    if (best > lim2) return false;
+  }
+  return true;
 }
 
 function lineAsCubic(pts: Pt[]): Cubic {
@@ -935,6 +1002,66 @@ export function arcToCubics(
   return out;
 }
 
+
+/** Cubics whose control points hug their chord are straight lines in disguise (they
+ *  appear when a straight edge is cut into several runs). Emit them as lines, then merge
+ *  neighbouring collinear lines, so straight edges stay perfectly straight and never wobble. */
+function straightenSegs(segs: Seg[], tol: number): Seg[] {
+  // strict: a gentle curve must never be flattened into a polygon (that is the very
+  // faceting we are removing), so only pieces that really are straight qualify
+  const lim = Math.max(0.12, tol * 0.3);
+  const out: Seg[] = [];
+  // for every emitted line: the start point and all intermediate vertices it swallowed
+  const lineStart: (Pt | null)[] = [];
+  const lineVerts: Pt[][] = [];
+  let cx = 0;
+  let cy = 0;
+  const offChord = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
+    const len = Math.hypot(bx - ax, by - ay);
+    if (len < 1e-9) return Math.hypot(px - ax, py - ay);
+    return Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len;
+  };
+  for (const g of segs) {
+    if (g.t === "M" || g.t === "Z") {
+      out.push(g);
+      lineStart.push(null);
+      lineVerts.push([]);
+      if (g.t === "M") {
+        cx = g.x;
+        cy = g.y;
+      }
+      continue;
+    }
+    let seg: Seg = g;
+    if (g.t === "C") {
+      if (offChord(g.c1x, g.c1y, cx, cy, g.x, g.y) <= lim && offChord(g.c2x, g.c2y, cx, cy, g.x, g.y) <= lim) {
+        seg = { t: "L", x: g.x, y: g.y };
+      }
+    } else if (g.t === "Q") {
+      if (offChord(g.cx, g.cy, cx, cy, g.x, g.y) <= lim) seg = { t: "L", x: g.x, y: g.y };
+    }
+    const k = out.length - 1;
+    if (seg.t === "L" && k >= 0 && out[k].t === "L" && lineStart[k]) {
+      const st = lineStart[k] as Pt;
+      const mid = lineVerts[k].concat([{ x: (out[k] as { x: number }).x, y: (out[k] as { y: number }).y }]);
+      // merge only if EVERY swallowed vertex still sits on the merged line
+      if (mid.every((m) => offChord(m.x, m.y, st.x, st.y, seg.x, seg.y) <= lim)) {
+        out[k] = { t: "L", x: seg.x, y: seg.y };
+        lineVerts[k] = mid;
+        cx = seg.x;
+        cy = seg.y;
+        continue;
+      }
+    }
+    out.push(seg);
+    lineStart.push(seg.t === "L" ? { x: cx, y: cy } : null);
+    lineVerts.push([]);
+    cx = (seg as { x: number }).x;
+    cy = (seg as { y: number }).y;
+  }
+  return out;
+}
+
 export function fitPolyline(
   points: Pt[],
   opts: {
@@ -968,6 +1095,11 @@ export function fitPolyline(
   }
   if (segs.length === 0) return lineSegs(pts, opts.closed);
   if (opts.closed) segs.push({ t: "Z" });
+  {
+    const straight = straightenSegs(segs, opts.tol);
+    segs.length = 0;
+    segs.push(...straight);
+  }
   // Sliver guard: a fitted closed contour whose shape is a hair-thin sliver has an
   // enormous perimeter²/area ratio and renders as a stray hairline across the
   // artwork. Such a loop falls back to its exact traced segments, while normal
@@ -1002,7 +1134,7 @@ export function fitPolyline(
  *  Handing it to the arc / Bezier fitters together with only a few neighbouring
  *  vertices is what produced wavy vent lines and huge bulging arcs: with 3-6
  *  points, any circle or curve "fits" with zero error. */
-const LONG_EDGE_PX = 30;
+const LONG_EDGE_PX = Number.POSITIVE_INFINITY;
 
 type FitOpts = {
   tol: number;
