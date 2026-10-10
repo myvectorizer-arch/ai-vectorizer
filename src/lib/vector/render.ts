@@ -123,6 +123,12 @@ function dropClosingDuplicate(points: Pt[]): Pt[] {
  * followed by an exact rescale about the bbox centre that restores the original
  * bounding box, so the outline gets smoother without changing the shape's size.
  */
+/** A smoothed vertex is accepted while it stays this close to the traced contour. 0.75 px was
+ *  so tight that thin strokes were only half-smoothed (lumpy, uneven width); 1.3 px lets
+ *  JPEG / anti-alias noise be averaged out while sharp tips are still protected by the
+ *  corner detector. */
+const CLAMP_PX = 1.3;
+
 function guardSmoothing(points: Pt[], passes: number): Pt[] {
   if (passes <= 0 || points.length < 8) return points;
   const easedRaw = smooth(points, passes, true);
@@ -133,8 +139,11 @@ function guardSmoothing(points: Pt[], passes: number): Pt[] {
   const eased = easedRaw.map((p, i) => {
     const dx = p.x - points[i].x;
     const dy = p.y - points[i].y;
-    return dx * dx + dy * dy <= 0.75 * 0.75 ? p : points[i];
+    return dx * dx + dy * dy <= CLAMP_PX * CLAMP_PX ? p : points[i];
   });
+  // A dense contour barely shrinks when smoothed, and rescaling its bbox distorts thin,
+  // curved strokes, so the size-restoring rescale is only used for sparse contours.
+  const dense = points.length >= 120;
   const before = bboxOf(points);
   const after = bboxOf(eased);
   const wBefore = before[2] - before[0];
@@ -142,8 +151,8 @@ function guardSmoothing(points: Pt[], passes: number): Pt[] {
   const wAfter = after[2] - after[0];
   const hAfter = after[3] - after[1];
   if (wBefore <= 0 || hBefore <= 0 || wAfter <= 0 || hAfter <= 0) return points;
-  const sx = wBefore / wAfter;
-  const sy = hBefore / hAfter;
+  const sx = dense ? 1 : wBefore / wAfter;
+  const sy = dense ? 1 : hBefore / hAfter;
   const cxBefore = (before[0] + before[2]) / 2;
   const cyBefore = (before[1] + before[3]) / 2;
   const cxAfter = (after[0] + after[2]) / 2;
@@ -522,24 +531,4 @@ export function renderDoc(trace: TraceResult, render: RenderSettings): RenderedD
         0,
       ),
     },
-  };
-}
-
-export function num(v: number, decimals = 2): number {
-  return round(v, decimals);
-}
-
-export function boundsOf(doc: RenderedDoc): [number, number, number, number] {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const s of doc.shapes) {
-    minX = Math.min(minX, s.bbox[0]);
-    minY = Math.min(minY, s.bbox[1]);
-    maxX = Math.max(maxX, s.bbox[2]);
-    maxY = Math.max(maxY, s.bbox[3]);
-  }
-  if (!isFinite(minX)) return [0, 0, doc.layout.boxW, doc.layout.boxH];
-  return [minX, minY, maxX, maxY];
-}
+ 
