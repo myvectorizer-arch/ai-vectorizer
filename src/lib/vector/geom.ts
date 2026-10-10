@@ -237,7 +237,7 @@ export function detectCorners(
       const L = closed ? (i - o + n) % n : i - o;
       const R = closed ? (i + o) % n : i + o;
       if (L >= 0 && L < n && hot[L] && cosv[L] < cosv[i]) best = false;
-      if (R >= 0 && R < n && hot[R] && (cosv[R] < cosv[i] || (cosv[R] === cosv[i] && o > 0 && R > i && false))) best = false;
+      if (R >= 0 && R < n && hot[R] && cosv[R] < cosv[i]) best = false;
     }
     if (best) flags[i] = true;
   }
@@ -441,7 +441,7 @@ function fitCubicRec(
   let bestBez = bez;
   let bestU = u;
   let bestSplit = split;
-    for (let i = 0; i < 4 && (bestD >= error || !curveHugsPoints(clean, bestBez, Math.max(Math.sqrt(error) * 1.5, 0.6))); i++) {
+  for (let i = 0; i < 4 && (bestD >= error || !curveHugsPoints(clean, bestBez, Math.max(Math.sqrt(error) * 1.5, 0.6))); i++) {
     u = reparameterize(clean, u, bez);
     bez = generateBezier(clean, u, tHat1, tHat2);
     const r = maxErrorPoint(clean, bez, u);
