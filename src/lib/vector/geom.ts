@@ -167,13 +167,58 @@ export function detectCorners(
   const n = points.length;
   const flags = new Array<boolean>(n).fill(false);
   if (n < 5) return flags;
-  const w = Math.max(1, Math.min(window, Math.floor(n / 3)));
+  // The look-around distance is measured in ARC LENGTH (px), not in vertex counts.
+  // A vertex window means "4 px" on a dense contour but "12 px" on a sparse one, and a
+  // 12 px window turns every rounded corner (r ~ 10-25 px) into a "sharp corner", which
+  // then became a flat bevel. Real corners turn within ~2 px; rounded ones do not.
+  const D = 1.4 + 0.2 * Math.max(1, window);
   const th = Math.cos((thresholdDeg * Math.PI) / 180);
+  const seg: number[] = new Array(n);
+  for (let i = 0; i < n; i++) seg[i] = dist(points[i], points[(i + 1) % n]);
+  const pointBack = (i: number): Pt | null => {
+    let acc = 0;
+    let k = i;
+    for (let step = 0; step < n; step++) {
+      const prev = (k - 1 + n) % n;
+      if (!closed && k === 0) return null;
+      const l = seg[prev];
+      if (acc + l >= D) {
+        const t = l === 0 ? 0 : (D - acc) / l;
+        return {
+          x: points[k].x + (points[prev].x - points[k].x) * t,
+          y: points[k].y + (points[prev].y - points[k].y) * t,
+        };
+      }
+      acc += l;
+      k = prev;
+    }
+    return null;
+  };
+  const pointAhead = (i: number): Pt | null => {
+    let acc = 0;
+    let k = i;
+    for (let step = 0; step < n; step++) {
+      const next = (k + 1) % n;
+      if (!closed && k === n - 1) return null;
+      const l = seg[k];
+      if (acc + l >= D) {
+        const t = l === 0 ? 0 : (D - acc) / l;
+        return {
+          x: points[k].x + (points[next].x - points[k].x) * t,
+          y: points[k].y + (points[next].y - points[k].y) * t,
+        };
+      }
+      acc += l;
+      k = next;
+    }
+    return null;
+  };
+  const cosv = new Array<number>(n).fill(1);
   for (let i = 0; i < n; i++) {
-    if (!closed && (i - w < 0 || i + w > n - 1)) continue;
-    const a = points[(i - w + n) % n];
+    const a = pointBack(i);
+    const c = pointAhead(i);
+    if (!a || !c) continue;
     const b = points[i];
-    const c = points[(i + w) % n];
     const v1x = b.x - a.x;
     const v1y = b.y - a.y;
     const v2x = c.x - b.x;
@@ -181,8 +226,20 @@ export function detectCorners(
     const l1 = Math.hypot(v1x, v1y);
     const l2 = Math.hypot(v2x, v2y);
     if (l1 < 0.4 || l2 < 0.4) continue;
-    const cos = (v1x * v2x + v1y * v2y) / (l1 * l2);
-    if (cos < th) flags[i] = true;
+    cosv[i] = (v1x * v2x + v1y * v2y) / (l1 * l2);
+  }
+  // non-maximum suppression: one corner per cluster of flagged vertices
+  const hot = cosv.map((c) => c < th);
+  for (let i = 0; i < n; i++) {
+    if (!hot[i]) continue;
+    let best = true;
+    for (let o = 1; o <= 6; o++) {
+      const L = closed ? (i - o + n) % n : i - o;
+      const R = closed ? (i + o) % n : i + o;
+      if (L >= 0 && L < n && hot[L] && cosv[L] < cosv[i]) best = false;
+      if (R >= 0 && R < n && hot[R] && (cosv[R] < cosv[i] || (cosv[R] === cosv[i] && o > 0 && R > i && false))) best = false;
+    }
+    if (best) flags[i] = true;
   }
   return flags;
 }
@@ -375,7 +432,7 @@ function fitCubicRec(
   let bez = generateBezier(clean, u, tHat1, tHat2);
   let { maxD, split } = maxErrorPoint(clean, bez, u);
 
-  if (maxD < error && (clean.length < 5 || curveHugsPoints(clean, bez, Math.sqrt(error) * 1.5))) {
+  if (maxD < error && curveHugsPoints(clean, bez, Math.max(Math.sqrt(error) * 1.5, 0.6))) {
     out.push([bez]);
     return;
   }
@@ -384,7 +441,7 @@ function fitCubicRec(
   let bestBez = bez;
   let bestU = u;
   let bestSplit = split;
-    for (let i = 0; i < 4 && (bestD >= error || !curveHugsPoints(clean, bestBez, Math.sqrt(error) * 1.5)); i++) {
+    for (let i = 0; i < 4 && (bestD >= error || !curveHugsPoints(clean, bestBez, Math.max(Math.sqrt(error) * 1.5, 0.6))); i++) {
     u = reparameterize(clean, u, bez);
     bez = generateBezier(clean, u, tHat1, tHat2);
     const r = maxErrorPoint(clean, bez, u);
@@ -395,7 +452,7 @@ function fitCubicRec(
       bestSplit = r.split;
     }
   }
-  if (bestD < error && (clean.length < 5 || curveHugsPoints(clean, bestBez, Math.sqrt(error) * 1.5))) {
+  if (bestD < error && curveHugsPoints(clean, bestBez, Math.max(Math.sqrt(error) * 1.5, 0.6))) {
     out.push([bestBez]);
     return;
   }
@@ -404,7 +461,11 @@ function fitCubicRec(
   // Cut the piece in the middle instead and fit each half.
   if (bestSplit <= 0 || bestSplit >= clean.length - 1) {
     if (clean.length < 5) {
-      out.push([bestBez]);
+      // Too few points to split any further and the curve does not follow them:
+      // the stretch between neighbouring data points is straight, so use lines.
+      const lines: Cubic[] = [];
+      for (let i = 1; i < clean.length; i++) lines.push(lineAsCubic([clean[i - 1], clean[i]]));
+      out.push(lines);
       return;
     }
     bestSplit = Math.floor(clean.length / 2);
@@ -1174,6 +1235,24 @@ function appendRun(segs: Seg[], runRaw: Pt[], opts: FitOpts): void {
   if (run.length - 1 > start) appendFittedRun(segs, run.slice(start), opts);
 }
 
+/** A real arc of radius r that was simplified to tolerance t can only have vertices
+ *  about sqrt(8*r*t) apart. If two neighbouring vertices of the run are further apart than
+ *  the arc could allow, the stretch between them is a straight edge whose intermediate
+ *  points were simplified away - the fitted "arc" is then just a huge bulge that happens
+ *  to pass through the few remaining points (the bowed Electric Panel / flap bug). */
+function gapsAllowArc(run: Pt[], r: number, tolerance: number): boolean {
+  if (!isFinite(r) || r <= 0) return false;
+  const maxSag = Math.max(tolerance * 1.6, 0.5);
+  for (let i = 1; i < run.length; i++) {
+    const g = dist(run[i - 1], run[i]);
+    const half = g / 2;
+    if (half >= r) return false;
+    const sag = r - Math.sqrt(r * r - half * half);
+    if (sag > maxSag) return false;
+  }
+  return true;
+}
+
 function appendFittedRun(segs: Seg[], run: Pt[], opts: FitOpts): void {
   if (run.length < 2) return;
   const tol = opts.tol;
@@ -1205,7 +1284,7 @@ function appendFittedRun(segs: Seg[], run: Pt[], opts: FitOpts): void {
     }
     if (opts.curveTypes.circularArcs && run.length >= 6) {
       const arc = fitArc(run, Math.max(tol, 0.35));
-      if (arc && dist(arc.start, arc.end) > 0.05) {
+      if (arc && dist(arc.start, arc.end) > 0.05 && gapsAllowArc(run, arc.rx, tol)) {
         segs.push({
           t: "A",
           rx: arc.rx,
@@ -1221,7 +1300,7 @@ function appendFittedRun(segs: Seg[], run: Pt[], opts: FitOpts): void {
     }
     if (opts.curveTypes.ellipticalArcs && run.length >= 6) {
       const ell = fitEllipse(run, Math.max(tol, 0.5));
-      if (ell && dist(ell.start, ell.end) > 0.05) {
+      if (ell && dist(ell.start, ell.end) > 0.05 && gapsAllowArc(run, Math.max(ell.rx, ell.ry), tol)) {
         segs.push({
           t: "A",
           rx: ell.rx,
