@@ -531,4 +531,24 @@ export function renderDoc(trace: TraceResult, render: RenderSettings): RenderedD
         0,
       ),
     },
- 
+  };
+}
+
+export function num(v: number, decimals = 2): number {
+  return round(v, decimals);
+}
+
+export function boundsOf(doc: RenderedDoc): [number, number, number, number] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const s of doc.shapes) {
+    minX = Math.min(minX, s.bbox[0]);
+    minY = Math.min(minY, s.bbox[1]);
+    maxX = Math.max(maxX, s.bbox[2]);
+    maxY = Math.max(maxY, s.bbox[3]);
+  }
+  if (!isFinite(minX)) return [0, 0, doc.layout.boxW, doc.layout.boxH];
+  return [minX, minY, maxX, maxY];
+}
