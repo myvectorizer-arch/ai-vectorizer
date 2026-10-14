@@ -672,13 +672,25 @@ export function fitClosedCircle(
 ): { cx: number; cy: number; r: number; start: number; sweep: 0 | 1; rms: number } | null {
   const pts2 = dedupe(pts);
   if (pts2.length < 10) return null;
+  // Judge roundness along the WHOLE contour, not just at its vertices. A finely simplified
+  // square keeps only its four corners (plus a few clustered points), and those all lie on one
+  // circle - so a vertex-only test happily turned squares into circles. Sampling the edges
+  // between vertices exposes the straight sides (they sit far inside the circle).
+  const dense: Pt[] = [];
+  for (let i = 0; i < pts2.length; i++) {
+    const a = pts2[i];
+    const b = pts2[(i + 1) % pts2.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const steps = Math.max(1, Math.ceil(len / 1.0));
+    for (let k = 0; k < steps; k++) dense.push({ x: a.x + ((b.x - a.x) * k) / steps, y: a.y + ((b.y - a.y) * k) / steps });
+  }
   let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
-  for (const p of pts2) {
+  for (const p of dense) {
     const z = p.x * p.x + p.y * p.y;
     sx += p.x; sy += p.y; sxx += p.x * p.x; syy += p.y * p.y;
     sxy += p.x * p.y; sxz += p.x * z; syz += p.y * z; sz += z;
   }
-  const n = pts2.length;
+  const n = dense.length;
   const sol = solveLinear(
     [
       [sxx, sxy, sx],
@@ -701,7 +713,7 @@ export function fitClosedCircle(
   const r = Math.sqrt(r2);
   let sum = 0;
   let maxErr = 0;
-  for (const p of pts2) {
+  for (const p of dense) {
     const d = Math.abs(Math.hypot(p.x - cx, p.y - cy) - r);
     sum += d * d;
     if (d > maxErr) maxErr = d;
@@ -723,7 +735,7 @@ export function fitClosedCircle(
   const rmsTolerance = r < 8 ? Math.max(0.8, r * 0.18) : r < 30 ? Math.max(0.7, r * 0.12) : Math.max(0.5, r * 0.006);
   if (rms > rmsTolerance || maxErr > maxTolerance) return null;
   // does the contour actually cover the whole circle (not just an arc)?
-  const angles = pts2.map((p) => Math.atan2(p.y - cy, p.x - cx)).sort((a, b) => a - b);
+  const angles = dense.map((p) => Math.atan2(p.y - cy, p.x - cx)).sort((a, b) => a - b);
   let maxGap = 0;
   for (let i = 0; i < angles.length; i++) {
     const next = i === angles.length - 1 ? angles[0] + Math.PI * 2 : angles[i + 1];
