@@ -133,10 +133,23 @@ export async function decodeImage(buffer: Buffer, maxDim: number, filename = "")
     throw new ImageError(`Format "${meta.format ?? "unknown"}" is not supported`);
   }
   const hadAlpha = Boolean(meta.hasAlpha);
+  // Small sources (screenshots, icons, logos) traced at their native pixel grid give staircase,
+  // lumpy edges. Enlarge them first with a smooth Lanczos kernel so the anti-aliased edge gradient
+  // gives the tracer sub-pixel accurate contours.
+  const srcLongest = Math.max(meta.width ?? 0, meta.height ?? 0);
+  const upTarget = Math.min(maxDim, 1400);
+  const upscale = srcLongest > 0 && srcLongest < upTarget * 0.9;
+  const targetSide = upscale ? upTarget : maxDim;
   const { data, info } = await sharp(buffer, { limitInputPixels: 40_000_000, animated: false })
     .rotate()
     .ensureAlpha()
-    .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
+    .resize({
+      width: targetSide,
+      height: targetSide,
+      fit: "inside",
+      withoutEnlargement: !upscale,
+      kernel: "lanczos3",
+    })
     .raw()
     .toBuffer({ resolveWithObject: true });
   return {
