@@ -146,7 +146,19 @@ function detectSimple(points: Pt[]): SimpleShape | undefined {
         break;
       }
     }
-    if (onBox) return { kind: "rect", x: bb[0], y: bb[1], w: bw, h: bh };
+    // all four corners must really be square: a capsule / rounded rectangle also has fill > 0.94
+    // and most points on the box, but its corners are cut, so it must stay a path
+    const cornerTol = Math.max(0.8, Math.min(bw, bh) * 0.04);
+    const corners: [number, number][] = [
+      [bb[0], bb[1]],
+      [bb[2], bb[1]],
+      [bb[2], bb[3]],
+      [bb[0], bb[3]],
+    ];
+    const squareCorners = corners.every(([cx, cy]) =>
+      points.some((p) => Math.abs(p.x - cx) <= cornerTol && Math.abs(p.y - cy) <= cornerTol),
+    );
+    if (onBox && squareCorners) return { kind: "rect", x: bb[0], y: bb[1], w: bw, h: bh };
   }
   // ellipse / circle
   if (fill > 0.68 && fill < 0.87) {
