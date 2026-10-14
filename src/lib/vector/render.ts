@@ -393,11 +393,15 @@ export function renderDoc(trace: TraceResult, render: RenderSettings): RenderedD
       // of the artwork, which showed up as faceted, polygon-like edges.
       const simplified = simplifyClosed(eased, 0.12);
       if (simplified.length < 3) return [];
+      // Small shapes (letters, dots) are fitted with a slightly looser tolerance, otherwise the
+      // Bezier fit follows the residual pixel noise and the glyph outline looks lumpy.
+      const bbSmall = bboxOf(simplified);
+      const smallGlyph = Math.max(bbSmall[2] - bbSmall[0], bbSmall[3] - bbSmall[1]) < 48 * Math.max(sx, sy);
       const whole = fitPolyline(simplified, {
         closed: true,
         cornerThreshold: trace.base.cornerThreshold,
         cornerWindow,
-        tol,
+        tol: smallGlyph ? tol * 1.6 : tol,
         curveTypes: render.curveTypes,
       });
       return whole.length >= 3 ? whole : [];
