@@ -1218,17 +1218,43 @@ type FitOpts = {
   };
 };
 
+/** Shorter straight stretches matter too: the stem of a letter or a thin bar is only 5-12 px
+ *  long. Such an edge is a line when its far end turns into something else (a cap, a serif, an
+ *  inner corner) by a clear angle, whereas an edge of a big arc is never that long and its
+ *  neighbours are nearly collinear. */
+const SHORT_EDGE_PX = 4.5;
+const SHORT_EDGE_TURN_DEG = 18;
+
+function isLineEdge(run: Pt[], i: number): boolean {
+  const d = dist(run[i - 1], run[i]);
+  if (d > LONG_EDGE_PX) return true;
+  if (d < SHORT_EDGE_PX) return false;
+  const ex = run[i].x - run[i - 1].x;
+  const ey = run[i].y - run[i - 1].y;
+  const turnBetween = (ax: number, ay: number, bx: number, by: number) => {
+    const la = Math.hypot(ax, ay);
+    const lb = Math.hypot(bx, by);
+    if (la < 1e-9 || lb < 1e-9) return 0;
+    const c = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb)));
+    return (Math.acos(c) * 180) / Math.PI;
+  };
+  let turn = 0;
+  if (i - 2 >= 0) turn = Math.max(turn, turnBetween(run[i - 1].x - run[i - 2].x, run[i - 1].y - run[i - 2].y, ex, ey));
+  if (i + 1 < run.length) turn = Math.max(turn, turnBetween(ex, ey, run[i + 1].x - run[i].x, run[i + 1].y - run[i].y));
+  return turn >= SHORT_EDGE_TURN_DEG;
+}
+
 function appendRun(segs: Seg[], runRaw: Pt[], opts: FitOpts): void {
   const run = dedupe(runRaw);
   if (run.length < 2) return;
   if (segs.length === 0) segs.push({ t: "M", x: run[0].x, y: run[0].y });
 
+  const lineEdge: boolean[] = [false];
   let hasLong = false;
   for (let i = 1; i < run.length; i++) {
-    if (dist(run[i - 1], run[i]) > LONG_EDGE_PX) {
-      hasLong = true;
-      break;
-    }
+    const isLine = isLineEdge(run, i);
+    lineEdge.push(isLine);
+    if (isLine) hasLong = true;
   }
   if (!hasLong) {
     appendFittedRun(segs, run, opts);
@@ -1236,7 +1262,7 @@ function appendRun(segs: Seg[], runRaw: Pt[], opts: FitOpts): void {
   }
   let start = 0;
   for (let i = 1; i < run.length; i++) {
-    if (dist(run[i - 1], run[i]) > LONG_EDGE_PX) {
+    if (lineEdge[i]) {
       if (i - 1 > start) appendFittedRun(segs, run.slice(start, i), opts);
       segs.push({ t: "L", x: run[i].x, y: run[i].y });
       start = i;
