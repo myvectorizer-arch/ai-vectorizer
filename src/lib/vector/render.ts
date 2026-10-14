@@ -11,7 +11,6 @@ import {
   shoelace,
   simplify,
   simplifyClosed,
-  smooth,
 } from "./geom";
 import type { TraceLoop, TraceResult, TraceShape } from "./analyze";
 import { LINE_FIT_TOLERANCE, type OutputSize, type RenderSettings } from "./types";
@@ -116,53 +115,6 @@ function dropClosingDuplicate(points: Pt[]): Pt[] {
   return points;
 }
 
-/**
- * Moving-average smoothing shrinks convex shapes: every pass multiplies the radius
- * by cos(2*pi/n), so a simplified 60-point circle lost ~2 % (4 px on a 130 px
- * radius) and thin rings came out visibly thinner. The smoothing is therefore
- * followed by an exact rescale about the bbox centre that restores the original
- * bounding box, so the outline gets smoother without changing the shape's size.
- */
-/** A smoothed vertex is accepted while it stays this close to the traced contour. 0.75 px was
- *  so tight that thin strokes were only half-smoothed (lumpy, uneven width); 1.3 px lets
- *  JPEG / anti-alias noise be averaged out while sharp tips are still protected by the
- *  corner detector. */
-const CLAMP_PX = 1.3;
-
-function guardSmoothing(points: Pt[], passes: number): Pt[] {
-  if (passes <= 0 || points.length < 8) return points;
-  const easedRaw = smooth(points, passes, true);
-  // Feature-preserving clamp: a moving average rounds off narrow channels and sharp
-  // tips (the gaps between fingers, spokes, letter counters). A smoothed vertex is
-  // therefore only accepted while it stays within 0.75px of the traced contour;
-  // otherwise the exact vertex is kept. Gentle staircases are still smoothed.
-  const eased = easedRaw.map((p, i) => {
-    const dx = p.x - points[i].x;
-    const dy = p.y - points[i].y;
-    return dx * dx + dy * dy <= CLAMP_PX * CLAMP_PX ? p : points[i];
-  });
-  // A dense contour barely shrinks when smoothed, and rescaling its bbox distorts thin,
-  // curved strokes, so the size-restoring rescale is only used for sparse contours.
-  const dense = points.length >= 120;
-  const before = bboxOf(points);
-  const after = bboxOf(eased);
-  const wBefore = before[2] - before[0];
-  const hBefore = before[3] - before[1];
-  const wAfter = after[2] - after[0];
-  const hAfter = after[3] - after[1];
-  if (wBefore <= 0 || hBefore <= 0 || wAfter <= 0 || hAfter <= 0) return points;
-  const sx = dense ? 1 : wBefore / wAfter;
-  const sy = dense ? 1 : hBefore / hAfter;
-  const cxBefore = (before[0] + before[2]) / 2;
-  const cyBefore = (before[1] + before[3]) / 2;
-  const cxAfter = (after[0] + after[2]) / 2;
-  const cyAfter = (after[1] + after[3]) / 2;
-  return eased.map((p) => ({
-    x: cxBefore + (p.x - cxAfter) * sx,
-    y: cyBefore + (p.y - cyAfter) * sy,
-  }));
-}
-
 function loopToPoints(loop: TraceLoop, sx: number, sy: number, tx: number, ty: number): Pt[] {
   const pts: Pt[] = [];
   for (let i = 0; i < loop.length; i += 2) {
@@ -255,10 +207,9 @@ export function renderDoc(trace: TraceResult, render: RenderSettings): RenderedD
   // anti-aliased boundary pixels of the source, which produces dozens of tiny
   // stray contours without adding any real detail.
   const tol = Math.max(
-    0.4,
-    LINE_FIT_TOLERANCE[render.lineFit] * Math.max(0.35, Math.min(2.5, trace.base.curvePrecision)),
+    0.25,
+    0.75 * LINE_FIT_TOLERANCE[render.lineFit] * Math.max(0.35, Math.min(2.5, trace.base.curvePrecision)),
   );
-  const passes = Math.max(0, Math.min(4, Math.round(trace.base.smoothness / 1.7)));
   const cornerWindow = Math.max(2, Math.round(2 + trace.base.detailLevel / 3));
   const keepHoles = render.stacking === "cutouts";
 
@@ -421,7 +372,9 @@ export function renderDoc(trace: TraceResult, render: RenderSettings): RenderedD
         }
       }
 
-      const eased = raw.length >= 16 ? guardSmoothing(raw, passes + 1) : raw;
+      // The traced contour is already smoothed (shrink-free, corner-aware) in analyze.ts, so no extra
+      // moving-average pass here: averaging the vertices again only rounds thin strokes.
+      const eased = raw;
       // Keep the contour dense (0.12 px): the curve fitter must see the real shape of
       // the edge. Simplifying to 0.3-0.5 px first left only a few vertices per curve, and
       // every later stage (lines / arcs / Beziers) then fitted those few points instead
