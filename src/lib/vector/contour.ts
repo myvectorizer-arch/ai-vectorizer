@@ -239,25 +239,38 @@ export function smoothContour(
   const n = pts.length;
   if (n < 16) return loop;
 
+  // Corner test at two scales. A real corner concentrates its turn right at the vertex, so the
+  // direction change measured over +-2 px is already most of the change measured over +-K px.
+  // A tight but smooth curve (round end of a thin stroke, small dot, small radius fillet) spreads
+  // the same turn along the arc, so the short-scale turn is only about 1/3 of the long-scale one.
+  // Without this check every vertex of such a curve counted as a corner, was pinned and stayed
+  // as lumpy as the raw trace.
   const K = 6;
-  const turn = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const p0 = pts[(i - K + n * 2) % n];
+  const KS = 2;
+  const turnAt = (i: number, k: number): number => {
+    const p0 = pts[(i - k + n * 2) % n];
     const p1 = pts[i];
-    const p2 = pts[(i + K) % n];
+    const p2 = pts[(i + k) % n];
     const ax = p1.x - p0.x;
     const ay = p1.y - p0.y;
     const bx = p2.x - p1.x;
     const by = p2.y - p1.y;
     const la = Math.hypot(ax, ay);
     const lb = Math.hypot(bx, by);
-    if (la < 1e-6 || lb < 1e-6) continue;
+    if (la < 1e-6 || lb < 1e-6) return 0;
     const c = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb)));
-    turn[i] = (Math.acos(c) * 180) / Math.PI;
+    return (Math.acos(c) * 180) / Math.PI;
+  };
+  const turn = new Float32Array(n);
+  const turnShort = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    turn[i] = turnAt(i, K);
+    turnShort[i] = turnAt(i, KS);
   }
   const pinned = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     if (turn[i] < cornerDeg) continue;
+    if (turnShort[i] < 0.7 * turn[i]) continue; // turn is spread out -> smooth curve, not a corner
     let isMax = true;
     for (let t = -K; t <= K && isMax; t++) {
       if (t === 0) continue;
