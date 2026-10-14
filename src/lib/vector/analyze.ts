@@ -1,5 +1,6 @@
 import { type Pt, bboxOf, round, shoelace, simplifyClosed } from "./geom";
 import type { Raster } from "./decode";
+import { smoothContour, traceField } from "./contour";
 import type { BaseSettings } from "./types";
 
 /** Flat [x,y,x,y…] loops in trace-space coordinates. */
@@ -808,47 +809,6 @@ function coverageField(
   return out;
 }
 
-/**
- * Refine traced contour vertices to sub-pixel accuracy: each vertex slides along
- * the gradient of the coverage field until the coverage is 0.5 – the true visual
- * edge. The topology stays exactly as traced, so no shape is invented or lost.
- */
-function refineSubpixel(loop: Pt[], field: Float32Array, w: number, h: number): Pt[] {
-  const sample = (x: number, y: number) => {
-    const cx = Math.min(w - 1, Math.max(0, x - 0.5));
-    const cy = Math.min(h - 1, Math.max(0, y - 0.5));
-    const x0 = Math.floor(cx);
-    const y0 = Math.floor(cy);
-    const x1 = Math.min(w - 1, x0 + 1);
-    const y1 = Math.min(h - 1, y0 + 1);
-    const fx = cx - x0;
-    const fy = cy - y0;
-    const v00 = field[y0 * w + x0];
-    const v10 = field[y0 * w + x1];
-    const v01 = field[y1 * w + x0];
-    const v11 = field[y1 * w + x1];
-    return (v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy;
-  };
-  const out: Pt[] = [];
-  for (let i = 0; i < loop.length; i++) {
-    const vx = loop[i].x;
-    const vy = loop[i].y;
-    const gx = sample(vx + 0.6, vy) - sample(vx - 0.6, vy);
-    const gy = sample(vx, vy + 0.6) - sample(vx, vy - 0.6);
-    const g = Math.hypot(gx, gy);
-    if (g < 0.05) {
-      out.push({ x: vx, y: vy });
-      continue;
-    }
-    const value = sample(vx, vy);
-    let offset = (0.5 - value) / g;
-    if (!Number.isFinite(offset)) offset = 0;
-    offset = Math.max(-0.75, Math.min(0.75, offset));
-    out.push({ x: vx + (gx / g) * offset, y: vy + (gy / g) * offset });
-  }
-  return out;
-}
-
 function pointInLoop(pt: Pt, loop: TraceLoop): boolean {
   let inside = false;
   const n = loop.length / 2;
@@ -1249,14 +1209,20 @@ export function analyzeImage(
     trimHairlines(mask, w, h, r, g, b, bgRef, palette[c], c === 0);
     if (base.cleanup) phantomPixels += dropPhantomComponents(mask, w, h, r, g, b, bgRef, palette[c]);
 
-    const rawLoops = traceMask(mask, w, h);
+    // Smooth sub-pixel contour (marching squares on the coverage field) instead of the pixel
+    // staircase + per-vertex sliding, which left slow ripples along straight edges.
+    const rawLoops = traceField(field, mask, w, h, 0.6);
     if (!rawLoops.length) continue;
 
     const outer: { loop: TraceLoop; area: number; bbox: [number, number, number, number] }[] = [];
     const holes: { loop: TraceLoop; area: number; bbox: [number, number, number, number] }[] = [];
     for (const rawPts of rawLoops) {
-      const refined = refineSubpixel(rawPts, field, w, h);
-      const simplified = simplifyClosed(refined, 0.12);
+      // Shrink-free low-pass (Taubin) that keeps real corners; `smoothness` 0..10 sets the strength.
+      const iterations = Math.round(4 + base.smoothness * 2);
+      const refined = base.smoothness > 0 ? smoothContour(rawPts, { iterations, minWavelength: 12 }) : rawPts;
+      // Keep the contour dense: the curve fitter in render.ts needs the real edge, not a
+      // 3 px-spaced polygon (fitting those few vertices is what made thin strokes wavy).
+      const simplified = simplifyClosed(refined, 0.03);
       if (simplified.length < 3) continue;
       const signed = shoelace(simplified);
       const area = Math.abs(signed);
