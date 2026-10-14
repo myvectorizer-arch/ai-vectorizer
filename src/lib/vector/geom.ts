@@ -1202,12 +1202,10 @@ export function fitPolyline(
 }
 
 /** An edge between two simplified vertices longer than this is emitted as an exact
- *  straight line. The simplifier guarantees every edge stays within a fraction of
- *  a pixel of the real contour, so a long edge IS a straight stretch of the shape.
- *  Handing it to the arc / Bezier fitters together with only a few neighbouring
- *  vertices is what produced wavy vent lines and huge bulging arcs: with 3-6
- *  points, any circle or curve "fits" with zero error. */
-const LONG_EDGE_PX = Number.POSITIVE_INFINITY;
+ *  straight line. The contour is smooth and dense (simplified to ~0.1 px), so a long edge IS
+ *  a straight stretch of the shape. Fitting such an edge together with its neighbours as one
+ *  Bezier made long straight sides (chevrons, stars, panels) bow outwards. */
+const LONG_EDGE_PX = 12;
 
 type FitOpts = {
   tol: number;
