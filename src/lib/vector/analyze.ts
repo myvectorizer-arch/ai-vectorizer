@@ -1219,7 +1219,32 @@ export function analyzeImage(
     for (const rawPts of rawLoops) {
       // Shrink-free low-pass (Taubin) that keeps real corners; `smoothness` 0..10 sets the strength.
       const iterations = Math.round(4 + base.smoothness * 2);
-      const refined = base.smoothness > 0 ? smoothContour(rawPts, { iterations, minWavelength: 12 }) : rawPts;
+      // Letters, dots and other small shapes are traced from only a few pixels of blurry /
+      // JPEG-noisy edge, so their contour carries ripples of 6-20 px wavelength that are large
+      // relative to the glyph. They need a longer low-pass than big icon shapes (which keep the
+      // original, gentler setting).
+      let loopW = 0;
+      {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const p of rawPts) {
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        }
+        loopW = Math.max(maxX - minX, maxY - minY);
+      }
+      const smallShape = loopW < 48;
+      const refined =
+        base.smoothness > 0
+          ? smoothContour(rawPts, {
+              iterations: smallShape ? Math.max(iterations, 16) : iterations,
+              minWavelength: smallShape ? 22 : 12,
+            })
+          : rawPts;
       // Keep the contour dense: the curve fitter in render.ts needs the real edge, not a
       // 3 px-spaced polygon (fitting those few vertices is what made thin strokes wavy).
       const simplified = simplifyClosed(refined, 0.03);
