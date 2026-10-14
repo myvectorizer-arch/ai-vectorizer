@@ -263,14 +263,20 @@ export function smoothContour(
   };
   const turn = new Float32Array(n);
   const turnShort = new Float32Array(n);
+  const turnLong = new Float32Array(n);
+  // A corner keeps its direction change when the window is doubled (both sides stay straight).
+  // A bump or ripple turns one way and straight back, so its net turn vanishes at the long scale.
+  const useLong = n >= 40;
   for (let i = 0; i < n; i++) {
     turn[i] = turnAt(i, K);
     turnShort[i] = turnAt(i, KS);
+    turnLong[i] = useLong ? turnAt(i, 2 * K) : turn[i];
   }
   const pinned = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     if (turn[i] < cornerDeg) continue;
     if (turnShort[i] < 0.7 * turn[i]) continue; // turn is spread out -> smooth curve, not a corner
+    if (turnLong[i] < 0.6 * turn[i]) continue; // turns back again -> ripple / bump, not a corner
     let isMax = true;
     for (let t = -K; t <= K && isMax; t++) {
       if (t === 0) continue;
