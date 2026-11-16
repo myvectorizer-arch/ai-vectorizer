@@ -1211,7 +1211,7 @@ export function analyzeImage(
 
     // Smooth sub-pixel contour (marching squares on the coverage field) instead of the pixel
     // staircase + per-vertex sliding, which left slow ripples along straight edges.
-    const rawLoops = traceField(field, mask, w, h, 0.6);
+    const rawLoops = traceField(field, mask, w, h, 0.45);
     if (!rawLoops.length) continue;
 
     const outer: { loop: TraceLoop; area: number; bbox: [number, number, number, number] }[] = [];
@@ -1241,13 +1241,16 @@ export function analyzeImage(
       const refined =
         base.smoothness > 0
           ? smoothContour(rawPts, {
-              iterations: smallShape ? Math.max(iterations, 16) : iterations,
-              minWavelength: smallShape ? 22 : 12,
+              // Small shapes (letters!) get a somewhat longer low-pass than big icon shapes,
+              // but not much: at 22 px / 16 passes the thin strokes of ~13 px text were eaten
+              // (the counter of an "A" filled in, "s" and "a" lost parts of their curves).
+              iterations: smallShape ? Math.max(iterations, 10) : iterations,
+              minWavelength: smallShape ? 10 : 12,
             })
           : rawPts;
       // Keep the contour dense: the curve fitter in render.ts needs the real edge, not a
       // 3 px-spaced polygon (fitting those few vertices is what made thin strokes wavy).
-      const simplified = simplifyClosed(refined, 0.03);
+      const simplified = simplifyClosed(refined, 0.15);
       if (simplified.length < 3) continue;
       const signed = shoelace(simplified);
       const area = Math.abs(signed);
